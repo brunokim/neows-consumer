@@ -5,7 +5,8 @@ services:
     volumes:
       - ./app-data/:/var/lib/postgresql/data
     environment:
-      POSTGRES_PASSWORD: "password"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
     ports:
       - "54321:5432"
     expose:
@@ -14,9 +15,12 @@ services:
   app:
     build:
       context: .
-      args:
-        - DB_PORT=5432
-        - DB_USERNAME=postgres
-        - DB_PASSWORD=password
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: password
     volumes:
       - .:/app
+    depends_on:
+      - db
