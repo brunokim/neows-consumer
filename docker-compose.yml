@@ -1,0 +1,22 @@
+version: "3.7"
+services:
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - ./app-data/:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: "password"
+    ports:
+      - "54321:5432"
+    expose:
+      - "54321"
+
+  app:
+    build:
+      context: .
+      args:
+        - DB_PORT=5432
+        - DB_USERNAME=postgres
+        - DB_PASSWORD=password
+    volumes:
+      - .:/app
