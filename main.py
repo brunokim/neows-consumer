@@ -72,7 +72,7 @@ class NearEarthObject:
         )
 
 
-def download_page(start_date: date) -> Iterator[NearEarthObject]:
+def download_page(start_date: date) -> list[NearEarthObject]:
     resp = requests.get(
         f"https://api.nasa.gov/neo/rest/v1/feed",
         params={
@@ -87,9 +87,12 @@ def download_page(start_date: date) -> Iterator[NearEarthObject]:
     )
 
     content = resp.json()
-    for _, neos in content["near_earth_objects"].items():
-        for neo in neos:
-            yield NearEarthObject.from_api(neo)
+
+    neos: list[NearEarthObject] = []
+    for date_str, date_neos in content["near_earth_objects"].items():
+        for neo in date_neos:
+            neos.append(NearEarthObject.from_api(neo))
+    return neos
 
 
 def main():
