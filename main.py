@@ -1,4 +1,4 @@
-from attrs import frozen, define
+from attrs import frozen
 from datetime import date, datetime
 import logging
 import os
@@ -105,7 +105,7 @@ class NearEarthObject:
 
 def download_neos(start_date: date) -> list[NearEarthObject]:
     resp = requests.get(
-        f"https://api.nasa.gov/neo/rest/v1/feed",
+        "https://api.nasa.gov/neo/rest/v1/feed",
         params={
             "start_date": start_date.isoformat(),
             "api_key": API_KEY,
