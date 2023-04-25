@@ -37,8 +37,12 @@ class CloseApproach:
             orbiting_body=orbiting_body,
         )
 
-    def as_db_tuple(self) -> tuple[datetime, float, float, str]:
+    def as_db_tuple(
+        self, neo_id: str, ingest_time: datetime
+    ) -> tuple[datetime, str, datetime, float, float, str]:
         return (
+            ingest_time,
+            neo_id,
             self.close_approach_time,
             self.relative_velocity_mph,
             self.miss_distance_miles,
@@ -91,8 +95,11 @@ class NearEarthObject:
         last = refid[:4]
         return mask + last
 
-    def as_db_tuple(self) -> tuple[str, str, float, float, float, bool, bool]:
+    def as_db_tuple(
+        self, ingest_time: datetime
+    ) -> tuple[datetime, str, str, float, float, float, bool, bool]:
         return (
+            ingest_time,
             self.anonymize_reference_id(),
             self.name,
             self.absolute_magnitude_h,
@@ -122,10 +129,11 @@ def download_neos(start_date: date) -> list[NearEarthObject]:
     return [
         NearEarthObject.from_api(neo)
         for date_str, date_neos in content["near_earth_objects"].items()
-        for neo in date_neos]
+        for neo in date_neos
+    ]
 
 
-def persist_neos(conn, neos: list[NearEarthObject]):
+def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
     num_approaches = 0
     with conn:
         with conn.cursor() as cur:
@@ -133,6 +141,7 @@ def persist_neos(conn, neos: list[NearEarthObject]):
                 cur.execute(
                     """
                     INSERT INTO neo(
+                        ingest_time,
                         neo_reference_id,
                         name,
                         absolute_magnitude_h,
@@ -140,22 +149,23 @@ def persist_neos(conn, neos: list[NearEarthObject]):
                         estimated_diameter_max_ft,
                         is_potentially_hazardous_asteroid,
                         is_sentry_object
-                    ) VALUES(%s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id""",
-                    neo.as_db_tuple(),
+                    neo.as_db_tuple(ingest_time),
                 )
                 neo_id = cur.fetchone()[0]
                 cur.executemany(
                     """
                     INSERT INTO close_approach(
+                        ingest_time,
                         neo_id,
                         close_approach_time,
                         relative_velocity_mph,
                         miss_distance_miles,
                         orbiting_body
-                    ) VALUES(%s, %s, %s, %s, %s)""",
+                    ) VALUES(%s, %s, %s, %s, %s, %s)""",
                     [
-                        (neo_id, *approach.as_db_tuple())
+                        approach.as_db_tuple(neo_id, ingest_time)
                         for approach in neo.close_approach_data
                     ],
                 )
@@ -172,6 +182,7 @@ def init_db(conn):
                 """
                 CREATE TABLE IF NOT EXISTS neo (
                     id SERIAL PRIMARY KEY,
+                    ingest_time TIMESTAMP WITH TIME ZONE,
                     neo_reference_id VARCHAR,
                     name TEXT,
                     absolute_magnitude_h DOUBLE PRECISION,
@@ -186,6 +197,7 @@ def init_db(conn):
                 """
                 CREATE TABLE IF NOT EXISTS close_approach (
                     id SERIAL PRIMARY KEY,
+                    ingest_time TIMESTAMP WITH TIME ZONE,
                     neo_id INTEGER REFERENCES neo(id),
                     close_approach_time TIMESTAMP,
                     relative_velocity_mph DOUBLE PRECISION,
@@ -206,9 +218,10 @@ def main():
     )
     try:
         init_db(conn)
+        ingest_time = datetime.now()
 
         neos = download_neos(date.fromisoformat("1982-12-10"))
-        persist_neos(conn, neos)
+        persist_neos(conn, ingest_time, neos)
     finally:
         conn.close()
 
