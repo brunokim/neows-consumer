@@ -119,11 +119,10 @@ def download_neos(start_date: date) -> list[NearEarthObject]:
 
     content = resp.json()
 
-    neos: list[NearEarthObject] = []
-    for date_str, date_neos in content["near_earth_objects"].items():
-        for neo in date_neos:
-            neos.append(NearEarthObject.from_api(neo))
-    return neos
+    return [
+        NearEarthObject.from_api(neo)
+        for date_str, date_neos in content["near_earth_objects"].items()
+        for neo in date_neos]
 
 
 def persist_neos(conn, neos: list[NearEarthObject]):
