@@ -1,9 +1,11 @@
 from attrs import frozen
-from datetime import date, datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
 import logging
 import os
 import psycopg2
 import requests
+from tqdm import tqdm
 from typing import Any
 
 
@@ -26,7 +28,9 @@ class CloseApproach:
 
     @staticmethod
     def from_api(d: dict[str, Any]) -> "CloseApproach":
-        close_approach_time = date.fromtimestamp(d["epoch_date_close_approach"] / 1000)
+        close_approach_time = datetime.fromtimestamp(
+            d["epoch_date_close_approach"] / 1000
+        )
         relative_velocity_mph = float(d["relative_velocity"]["miles_per_hour"])
         miss_distance_miles = float(d["miss_distance"]["miles"])
         orbiting_body = d["orbiting_body"]
@@ -110,19 +114,34 @@ class NearEarthObject:
         )
 
 
-def download_neos(start_date: date) -> list[NearEarthObject]:
+class TooManyRequestsException(Exception):
+    pass
+
+
+def download_neos(start_date: date, end_date: date) -> list[NearEarthObject]:
+    """Download near Earth objects from NASA API.
+
+    Returns all objects with closest approach to Earth in the [start_date, end_date) interval.
+    The API returns dates at most 8 days apart.
+    """
+
+    # The API actually includes end_date in the response, so we subtract 1 day to keep it a
+    # closed-open interval.
     resp = requests.get(
         "https://api.nasa.gov/neo/rest/v1/feed",
         params={
             "start_date": start_date.isoformat(),
+            "end_date": (end_date - timedelta(days=1)).isoformat(),
             "api_key": API_KEY,
             "detailed": False,
         },
     )
+    if resp.status_code == 429:
+        raise TooManyRequestsException()
     assert resp.ok, resp.text
-    logger.debug(
-        "download_page: Remaining calls: %s", resp.headers["X-RateLimit-Remaining"]
-    )
+
+    remaining = resp.headers["X-RateLimit-Remaining"]
+    logger.debug("download_page: Remaining calls: %s", remaining)
 
     content = resp.json()
 
@@ -134,6 +153,7 @@ def download_neos(start_date: date) -> list[NearEarthObject]:
 
 
 def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
+    """Persist NEOs into the database."""
     num_approaches = 0
     with conn:
         with conn.cursor() as cur:
@@ -173,6 +193,32 @@ def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
     logger.debug(
         "Wrote %d NEO rows and %d close approach rows", len(neos), num_approaches
     )
+
+
+def ingest_neos(
+    conn,
+    ingest_time: datetime,
+    start_date: date,
+    end_date: date = None,
+    window=timedelta(days=8),
+):
+    if end_date is None:
+        end_date = date.today()
+
+    num_windows = int((end_date - start_date) / window)
+    with tqdm(total=num_windows) as pbar:
+        i = 0
+        while i < num_windows:
+            date1 = start_date + i * window
+            date2 = start_date + (i + 1) * window
+            try:
+                neos = download_neos(date1, date2)
+                persist_neos(conn, ingest_time, neos)
+                pbar.update(1)
+                i += 1
+            except TooManyRequestsException as exc:
+                logger.error("Too many requests, wait for a bit...")
+                time.sleep(60)
 
 
 def init_db(conn):
@@ -219,9 +265,7 @@ def main():
     try:
         init_db(conn)
         ingest_time = datetime.now()
-
-        neos = download_neos(date.fromisoformat("1982-12-10"))
-        persist_neos(conn, ingest_time, neos)
+        ingest_neos(conn, ingest_time, date(1982, 12, 10))
     finally:
         conn.close()
 
