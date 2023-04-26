@@ -1,5 +1,4 @@
 from attrs import frozen
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 import logging
@@ -98,6 +97,10 @@ class NearEarthObject:
         )
 
     def anonymize_reference_id(self) -> str:
+        """Mask neo_reference_id as PII.
+
+        Keep only last 4 characters, and change others to '-'.
+        """
         refid = self.neo_reference_id
         mask = "-" * (len(refid) - 4)
         last = refid[:4]
@@ -206,6 +209,11 @@ def ingest_neos(
     end_date: date = None,
     window=timedelta(days=8),
 ):
+    """Ingest all NEOs between the given dates, paginating by 'window' days.
+
+    Since the API limit is 1000 requests/hour, we don't gain anything by performing
+    requests in parallel, as each request takes <3.6s to complete.
+    """
     if end_date is None:
         end_date = date.today()
 
@@ -220,12 +228,13 @@ def ingest_neos(
                 persist_neos(conn, ingest_time, neos)
                 pbar.update(1)
                 i += 1
-            except TooManyRequestsException as exc:
+            except TooManyRequestsException:
                 logger.error("Too many requests, wait for a bit...")
                 time.sleep(60)
 
 
 def init_db(conn):
+    """Create DB tables."""
     with conn:
         with conn.cursor() as cur:
             cur.execute(
