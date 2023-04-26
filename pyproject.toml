@@ -13,6 +13,7 @@ requests = "^2.28.2"
 psycopg2 = "^2.9.6"
 attrs = "^23.1.0"
 tqdm = "^4.65.0"
+python-dotenv = "^1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.3.1"

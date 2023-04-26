@@ -1,15 +1,19 @@
 from attrs import frozen
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
+from dotenv import load_dotenv
 import logging
 import os
 import psycopg2
 import requests
+import time
 from tqdm import tqdm
 from typing import Any
 
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 API_KEY = os.getenv("API_KEY") or "DEMO_KEY"
 DB_HOST = os.getenv("DB_HOST")
