@@ -20,12 +20,16 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 API_KEY = os.getenv("API_KEY") or "DEMO_KEY"
+
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME") or DB_USER
 
+db_params = dict(
+    dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
+)
 #### Data model
 
 
@@ -334,7 +338,6 @@ limiter = Limiter(RequestRate(2500, Duration.HOUR))
 
 @define
 class Ingestion:
-    conn = field()
     start_date: date = field()
     end_date: date = field(factory=date.today)
     window_size: timedelta = field(default=timedelta(days=8))
@@ -348,45 +351,49 @@ class Ingestion:
     turnstile: Turnstile = field(init=False, factory=Turnstile)
 
     @limiter.ratelimit("nasa-neows", delay=True)
-    def ingest_page(self, start: date, end: date):
+    def ingest_page(self, conn, start: date, end: date):
         neos = download_neos(start, end)
-        persist_neos(self.conn, self.ingest_time, neos)
+        persist_neos(conn, self.ingest_time, neos)
 
     def worker(self, pbar, lock):
-        while True:
-            try:
-                self.turnstile.wait()
+        conn = psycopg2.connect(**db_params)
+        try:
+            while True:
+                try:
+                    self.turnstile.wait()
 
-                # 10us timeout allows for a thread switch.
-                task = self.task_queue.get(timeout=1e-5)
+                    # 10us timeout allows for a thread switch.
+                    task = self.task_queue.get(timeout=1e-5)
 
-                self.ingest_page(task.start, task.end)
-                with lock:
-                    pbar.update(1)
-            except queue.Empty:
-                # No more items to process.
-                logger.debug("empty queue")
-                break
-            except TooManyRequestsException:
-                # Stop all threads from starting requests for 60 seconds.
-                self.turnstile.stop(60.0)
-                # Throttling doesn't count as a retry.
-                self.task_queue.put(task)
-                logger.warning("Redoing task %s", task)
-            except Exception:
-                # Stop all threads from starting requests for 60 seconds.
-                logger.exception("Unexpected exception handling task %s", task)
-                # Some other exception was raised, increment retry count.
-                if task.retry_count + 1 >= self.max_retries:
-                    self.dead_letter_queue.put(task)
-                else:
-                    self.task_queue.put(task.try_again())
+                    self.ingest_page(conn, task.start, task.end)
+                    with lock:
+                        pbar.update(1)
+                except queue.Empty:
+                    # No more items to process.
+                    logger.debug("empty queue")
+                    break
+                except TooManyRequestsException:
+                    # Stop all threads from starting requests for 60 seconds.
+                    self.turnstile.stop(60.0)
+                    # Throttling doesn't count as a retry.
+                    self.task_queue.put(task)
                     logger.warning("Redoing task %s", task)
-            finally:
-                with lock:
-                    # Update progress bar even if nothing was written.
-                    pbar.update(0)
-            logger.info("Approx queue size: %d", self.task_queue.qsize())
+                except Exception:
+                    # Stop all threads from starting requests for 60 seconds.
+                    logger.exception("Unexpected exception handling task %s", task)
+                    # Some other exception was raised, increment retry count.
+                    if task.retry_count + 1 >= self.max_retries:
+                        self.dead_letter_queue.put(task)
+                    else:
+                        self.task_queue.put(task.try_again())
+                        logger.warning("Redoing task %s", task)
+                finally:
+                    with lock:
+                        # Update progress bar even if nothing was written.
+                        pbar.update(0)
+                logger.info("Approx queue size: %d", self.task_queue.qsize())
+        finally:
+            conn.close()
 
     def run(self):
         num_windows = int((self.end_date - self.start_date) / self.window_size)
@@ -429,17 +436,26 @@ def main(start_date: date, num_workers: int):
     log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(log_handler)
 
-    conn = psycopg2.connect(
-        dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
-    )
+    # FIXME: Use a single connection for all threads.
+    #
+    # Sharing a connection across threads fails intermittentily with
+    #
+    #     psycopg2.ProgrammingError: the connection cannot be re-entered recursively
+    #
+    # I'm using connections only as context managers.
+    #
+    # Relevant SO thread: https://stackoverflow.com/q/73803605/946814
+    # TODO: open a bug in psycopg2?
+    conn = psycopg2.connect(**db_params)
     try:
         init_db(conn)
-        ingestion = Ingestion(conn, start_date=start_date, num_workers=num_workers)
-        dead_tasks = ingestion.run()
-        if dead_tasks:
-            logger.error("Could not fetch %d tasks: %s", len(dead_tasks), dead_tasks)
     finally:
         conn.close()
+
+    ingestion = Ingestion(start_date=start_date, num_workers=num_workers)
+    dead_tasks = ingestion.run()
+    if dead_tasks:
+        logger.error("Could not fetch %d tasks: %s", len(dead_tasks), dead_tasks)
 
 
 if __name__ == "__main__":
