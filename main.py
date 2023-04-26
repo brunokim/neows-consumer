@@ -342,8 +342,8 @@ class Ingestion:
     max_retries: int = field(default=3)
 
     ingest_time: datetime = field(init=False, factory=datetime.now)
-    task_queue: queue.Queue = field(init=False, factory=queue.Queue)
-    dead_letter_queue: queue.Queue = field(init=False, factory=queue.Queue)
+    task_queue: queue.SimpleQueue = field(init=False, factory=queue.SimpleQueue)
+    dead_letter_queue: queue.SimpleQueue = field(init=False, factory=queue.SimpleQueue)
 
     turnstile: Turnstile = field(init=False, factory=Turnstile)
 
