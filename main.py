@@ -1,14 +1,19 @@
-from attrs import frozen
+from attrs import define, evolve, field, frozen
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 import logging
 import os
 import psycopg2
+from pyrate_limiter import Duration, RequestRate, Limiter
+import queue
 import requests
 import time
-from tqdm import tqdm
+import threading
+import tqdm
 from typing import Any
 
+#### Initialization
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,41 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME") or DB_USER
 
+#### Data model
+
+
+def traverse(obj, *keys):
+    """Traverse a sequence of keys, returning None if there's a key/index error.
+
+    >>> traverse({"foo": [[1, 2], [3, 4]]}, ["foo", 0, 1])
+    2
+    """
+    for key in keys:
+        if obj is None:
+            return None
+        match obj:
+            case list() | tuple():
+                key = int(key)
+                if 0 <= key < len(list):
+                    obj = obj[key]
+                return None
+            case dict():
+                obj = obj.get(key)
+            case _:
+                assert isinstance(key, str), key
+                if not hasattr(obj, key):
+                    return None
+                obj = getattr(obj, key)
+    return obj
+
+
+def extract(obj, f, *keys):
+    """Traverse an object and convert it to the given type if it's not None."""
+    obj = traverse(obj, *keys)
+    if obj is None:
+        return None
+    return f(obj)
+
 
 @frozen
 class CloseApproach:
@@ -31,12 +71,12 @@ class CloseApproach:
 
     @staticmethod
     def from_api(d: dict[str, Any]) -> "CloseApproach":
-        close_approach_time = datetime.fromtimestamp(
-            d["epoch_date_close_approach"] / 1000
+        close_approach_time = extract(
+            d, lambda x: datetime.fromtimestamp(x / 1000), "epoch_date_close_approach"
         )
-        relative_velocity_mph = float(d["relative_velocity"]["miles_per_hour"])
-        miss_distance_miles = float(d["miss_distance"]["miles"])
-        orbiting_body = d["orbiting_body"]
+        relative_velocity_mph = extract(d, float, "relative_velocity", "miles_per_hour")
+        miss_distance_miles = extract(d, float, "miss_distance", "miles")
+        orbiting_body = extract(d, str, "orbiting_body")
         return CloseApproach(
             close_approach_time=close_approach_time,
             relative_velocity_mph=relative_velocity_mph,
@@ -70,20 +110,23 @@ class NearEarthObject:
 
     @staticmethod
     def from_api(d: dict[str, Any]) -> "NearEarthObject":
-        neo_reference_id = d["neo_reference_id"]
-        name = d["name"]
-        absolute_magnitude_h = float(d["absolute_magnitude_h"])
-        estimated_diameter_min_ft = float(
-            d["estimated_diameter"]["feet"]["estimated_diameter_min"]
+        neo_reference_id = extract(d, str, "neo_reference_id")
+        name = extract(d, str, "name")
+        absolute_magnitude_h = extract(d, float, "absolute_magnitude_h")
+        estimated_diameter_min_ft = extract(
+            d, float, "estimated_diameter", "feet", "estimated_diameter_min"
         )
-        estimated_diameter_max_ft = float(
-            d["estimated_diameter"]["feet"]["estimated_diameter_max"]
+        estimated_diameter_max_ft = extract(
+            d, float, "estimated_diameter", "feet", "estimated_diameter_max"
         )
-        is_potentially_hazardous_asteroid = d["is_potentially_hazardous_asteroid"]
+        is_potentially_hazardous_asteroid = extract(
+            d, bool, "is_potentially_hazardous_asteroid"
+        )
         close_approach_data = tuple(
-            CloseApproach.from_api(x) for x in d["close_approach_data"]
+            CloseApproach.from_api(x)
+            for x in (extract(d, list, "close_approach_data") or [])
         )
-        is_sentry_object = d["is_sentry_object"]
+        is_sentry_object = extract(d, bool, "is_sentry_object")
 
         return NearEarthObject(
             neo_reference_id=neo_reference_id,
@@ -121,6 +164,9 @@ class NearEarthObject:
         )
 
 
+#### Download from source.
+
+
 class TooManyRequestsException(Exception):
     pass
 
@@ -148,7 +194,8 @@ def download_neos(start_date: date, end_date: date) -> list[NearEarthObject]:
     assert resp.ok, resp.text
 
     remaining = resp.headers["X-RateLimit-Remaining"]
-    logger.debug("download_page: Remaining calls: %s", remaining)
+    total = resp.headers["X-RateLimit-Limit"]
+    logger.debug("download_page: %s/%s remaining calls", remaining, total)
 
     content = resp.json()
 
@@ -157,6 +204,42 @@ def download_neos(start_date: date, end_date: date) -> list[NearEarthObject]:
         for date_str, date_neos in content["near_earth_objects"].items()
         for neo in date_neos
     ]
+
+
+#### Database persistence
+
+
+def init_db(conn):
+    """Create DB tables."""
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS neo (
+                    id SERIAL PRIMARY KEY,
+                    ingest_time TIMESTAMP WITH TIME ZONE,
+                    neo_reference_id VARCHAR,
+                    name TEXT,
+                    absolute_magnitude_h DOUBLE PRECISION,
+                    estimated_diameter_min_ft DOUBLE PRECISION,
+                    estimated_diameter_max_ft DOUBLE PRECISION,
+                    is_potentially_hazardous_asteroid BOOL,
+                    is_sentry_object BOOL
+                );"""
+            )
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS close_approach (
+                    id SERIAL PRIMARY KEY,
+                    ingest_time TIMESTAMP WITH TIME ZONE,
+                    neo_id INTEGER REFERENCES neo(id),
+                    close_approach_time TIMESTAMP,
+                    relative_velocity_mph DOUBLE PRECISION,
+                    miss_distance_miles DOUBLE PRECISION,
+                    orbiting_body TEXT
+                );"""
+            )
 
 
 def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
@@ -202,73 +285,128 @@ def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
     )
 
 
-def ingest_neos(
-    conn,
-    ingest_time: datetime,
-    start_date: date,
-    end_date: date = None,
-    window=timedelta(days=8),
-):
-    """Ingest all NEOs between the given dates, paginating by 'window' days.
+#### Ingestion control
 
-    Since the API limit is 1000 requests/hour, we don't gain anything by performing
-    requests in parallel, as each request takes <3.6s to complete.
-    """
-    if end_date is None:
-        end_date = date.today()
 
-    num_windows = int((end_date - start_date) / window)
-    with tqdm(total=num_windows) as pbar:
-        i = 0
-        while i < num_windows:
-            date1 = start_date + i * window
-            date2 = start_date + (i + 1) * window
+@define
+class Turnstile:
+    """Only one thread can pass at a time. The turnstile may be stopped for a period of time."""
+
+    sem: threading.Semaphore = field(init=False)
+
+    def __attrs_post_init__(self):
+        self.sem = threading.Semaphore(1)
+
+    def wait(self):
+        """Wait for your turn through the turnstile."""
+        self.sem.acquire()
+        self.sem.release()
+
+    def stop(self, wait_secs: float = 60.0):
+        """Stop all other threads for wait_secs."""
+        if self.sem.acquire(block=False):
+            threading.Timer(wait_secs, self.restart)
+
+    def restart(self):
+        """Restart the turnstile."""
+        self.sem.release()
+
+
+@frozen
+class Task:
+    start: date
+    end: date
+    retry_count: int = field(default=0)
+
+    def try_again(self) -> "Task":
+        return evolve(self, retry_count=self.retry_count + 1)
+
+
+# Slightly higher than the observed rate limit of 2000/hr.
+# Any overflow will be caught by waiting on the turnstile.
+limiter = Limiter(RequestRate(2500, Duration.HOUR))
+
+
+@define
+class Ingestion:
+    conn = field()
+    start_date: date = field()
+    end_date: date = field(factory=date.today)
+    window_size: timedelta = field(default=timedelta(days=8))
+    num_workers: int = field(default=15)
+    max_retries: int = field(default=3)
+
+    ingest_time: datetime = field(init=False, factory=datetime.now)
+    task_queue: queue.Queue = field(init=False, factory=queue.Queue)
+    dead_letter_queue: queue.Queue = field(init=False, factory=queue.Queue)
+
+    turnstile: Turnstile = field(init=False, factory=Turnstile)
+
+    @limiter.ratelimit("nasa-neows", delay=True)
+    def ingest_page(self, start: date, end: date):
+        neos = download_neos(start, end)
+        persist_neos(self.conn, self.ingest_time, neos)
+
+    def worker(self, pbar, lock):
+        thread = threading.current_thread()
+        while True:
             try:
-                neos = download_neos(date1, date2)
-                persist_neos(conn, ingest_time, neos)
-                pbar.update(1)
-                i += 1
+                self.turnstile.wait()
+
+                # Timeout allows for a thread switch.
+                task = self.task_queue.get(timeout=1e-5)
+
+                self.ingest_page(task.start, task.end)
+                self.task_queue.task_done()
+                with lock:
+                    pbar.update(1)
+            except queue.Empty:
+                # No more items to process.
+                break
             except TooManyRequestsException:
-                logger.error("Too many requests, wait for a bit...")
-                time.sleep(60)
+                # Stop all threads from starting requests for 60 seconds.
+                self.turnstile.stop(60.0)
+                # Throttling doesn't count as a retry.
+                self.task_queue.put(task)
+            except:
+                # Some other exception was raised, increment retry count.
+                if task.retry_count + 1 >= self.max_retries:
+                    self.dead_letter_queue.put(task)
+                    self.task_queue.task_done()
+                else:
+                    self.task_queue.put(task.try_again())
+
+    def run(self):
+        num_windows = int((self.end_date - self.start_date) / self.window_size)
+        for i in range(num_windows):
+            start = self.start_date + i * self.window_size
+            end = self.start_date + (i + 1) * self.window_size
+            self.task_queue.put_nowait(Task(start, end, 0))
+
+        pbar = tqdm.tqdm(total=num_windows)
+        lock = pbar.get_lock()
+
+        for i in range(self.num_workers):
+            threading.Thread(
+                target=self.worker, name=f"worker #{i}", args=(pbar, lock)
+            ).start()
+
+        self.task_queue.join()
+
+        # Dumping a queue: https://stackoverflow.com/a/69095442/946814
+        self.dead_letter_queue.put(None)
+        get_with_timeout = lambda: self.dead_letter_queue.get(timeout=1e-5)
+        dead_letters = list(iter(get_with_timeout, None))
+
+        return dead_letters
 
 
-def init_db(conn):
-    """Create DB tables."""
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS neo (
-                    id SERIAL PRIMARY KEY,
-                    ingest_time TIMESTAMP WITH TIME ZONE,
-                    neo_reference_id VARCHAR,
-                    name TEXT,
-                    absolute_magnitude_h DOUBLE PRECISION,
-                    estimated_diameter_min_ft DOUBLE PRECISION,
-                    estimated_diameter_max_ft DOUBLE PRECISION,
-                    is_potentially_hazardous_asteroid BOOL,
-                    is_sentry_object BOOL
-                );"""
-            )
-
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS close_approach (
-                    id SERIAL PRIMARY KEY,
-                    ingest_time TIMESTAMP WITH TIME ZONE,
-                    neo_id INTEGER REFERENCES neo(id),
-                    close_approach_time TIMESTAMP,
-                    relative_velocity_mph DOUBLE PRECISION,
-                    miss_distance_miles DOUBLE PRECISION,
-                    orbiting_body TEXT
-                );"""
-            )
+#### App entry point
 
 
 def main():
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.ERROR,
         format="%(levelname)s:%(asctime)s:%(name)s:%(funcName)s:%(message)s",
     )
 
@@ -277,8 +415,11 @@ def main():
     )
     try:
         init_db(conn)
-        ingest_time = datetime.now()
-        ingest_neos(conn, ingest_time, date(1982, 12, 10))
+        ingestion = Ingestion(conn, start_date=date(1982, 12, 10))
+        dead_tasks = ingestion.run()
+        if dead_tasks:
+            logger.error("Could not fetch %d tasks: %s", len(dead_tasks), dead_tasks)
+
     finally:
         conn.close()
 
