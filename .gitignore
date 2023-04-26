@@ -5,3 +5,5 @@
 # Secrets
 .env
 
+# Debugging
+app.log

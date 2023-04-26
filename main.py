@@ -180,6 +180,7 @@ def download_neos(start_date: date, end_date: date) -> list[NearEarthObject]:
 
     # The API actually includes end_date in the response, so we subtract 1 day to keep it a
     # closed-open interval.
+    logger.debug("starting download: [%s, %s)", start_date, end_date)
     resp = requests.get(
         "https://api.nasa.gov/neo/rest/v1/feed",
         params={
@@ -189,13 +190,14 @@ def download_neos(start_date: date, end_date: date) -> list[NearEarthObject]:
             "detailed": False,
         },
     )
-    if resp.status_code == 429:
-        raise TooManyRequestsException()
-    assert resp.ok, resp.text
 
     remaining = resp.headers["X-RateLimit-Remaining"]
     total = resp.headers["X-RateLimit-Limit"]
     logger.debug("download_page: %s/%s remaining calls", remaining, total)
+
+    if resp.status_code == 429:
+        raise TooManyRequestsException()
+    assert resp.ok, resp.text
 
     content = resp.json()
 
@@ -280,7 +282,7 @@ def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
                     ],
                 )
                 num_approaches += cur.rowcount
-    logger.debug(
+    logger.info(
         "Wrote %d NEO rows and %d close approach rows", len(neos), num_approaches
     )
 
@@ -299,16 +301,19 @@ class Turnstile:
 
     def wait(self):
         """Wait for your turn through the turnstile."""
+        logger.debug("passing through turnstile...")
         self.sem.acquire()
         self.sem.release()
 
     def stop(self, wait_secs: float = 60.0):
         """Stop all other threads for wait_secs."""
-        if self.sem.acquire(block=False):
+        if self.sem.acquire(blocking=False):
+            logger.debug("stopping turnstile for %fs...", wait_secs)
             threading.Timer(wait_secs, self.restart)
 
     def restart(self):
         """Restart the turnstile."""
+        logger.debug("restarting turnstile...")
         self.sem.release()
 
 
@@ -348,33 +353,40 @@ class Ingestion:
         persist_neos(self.conn, self.ingest_time, neos)
 
     def worker(self, pbar, lock):
-        thread = threading.current_thread()
         while True:
             try:
                 self.turnstile.wait()
 
-                # Timeout allows for a thread switch.
+                # 10us timeout allows for a thread switch.
                 task = self.task_queue.get(timeout=1e-5)
 
                 self.ingest_page(task.start, task.end)
-                self.task_queue.task_done()
                 with lock:
                     pbar.update(1)
             except queue.Empty:
                 # No more items to process.
+                logger.debug("empty queue")
                 break
             except TooManyRequestsException:
                 # Stop all threads from starting requests for 60 seconds.
                 self.turnstile.stop(60.0)
                 # Throttling doesn't count as a retry.
                 self.task_queue.put(task)
-            except:
+                logger.warning("Redoing task %s", task)
+            except Exception:
+                # Stop all threads from starting requests for 60 seconds.
+                logger.exception("Unexpected exception handling task %s", task)
                 # Some other exception was raised, increment retry count.
                 if task.retry_count + 1 >= self.max_retries:
                     self.dead_letter_queue.put(task)
-                    self.task_queue.task_done()
                 else:
                     self.task_queue.put(task.try_again())
+                    logger.warning("Redoing task %s", task)
+            finally:
+                with lock:
+                    # Update progress bar even if nothing was written.
+                    pbar.update(0)
+            logger.info("Approx queue size: %d", self.task_queue.qsize())
 
     def run(self):
         num_windows = int((self.end_date - self.start_date) / self.window_size)
@@ -386,12 +398,17 @@ class Ingestion:
         pbar = tqdm.tqdm(total=num_windows)
         lock = pbar.get_lock()
 
-        for i in range(self.num_workers):
+        threads = [
             threading.Thread(
-                target=self.worker, name=f"worker #{i}", args=(pbar, lock)
-            ).start()
+                target=self.worker, name=f"worker #{i:02d}", args=(pbar, lock)
+            )
+            for i in range(self.num_workers)
+        ]
+        for thread in threads:
+            thread.start()
 
-        self.task_queue.join()
+        for thread in threads:
+            thread.join()
 
         # Dumping a queue: https://stackoverflow.com/a/69095442/946814
         self.dead_letter_queue.put(None)
@@ -403,26 +420,44 @@ class Ingestion:
 
 #### App entry point
 
+LOG_FORMAT = "[%(asctime)s] %(levelname)s [%(threadName)s] [%(filename)s:%(funcName)s:%(lineno)d] %(message)s"
 
-def main():
-    logging.basicConfig(
-        level=logging.ERROR,
-        format="%(levelname)s:%(asctime)s:%(name)s:%(funcName)s:%(message)s",
-    )
+
+def main(start_date: date, num_workers: int):
+    logger.setLevel(logging.DEBUG)
+    log_handler = logging.FileHandler("app.log")
+    log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logger.addHandler(log_handler)
 
     conn = psycopg2.connect(
         dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
     )
     try:
         init_db(conn)
-        ingestion = Ingestion(conn, start_date=date(1982, 12, 10))
+        ingestion = Ingestion(conn, start_date=start_date, num_workers=num_workers)
         dead_tasks = ingestion.run()
         if dead_tasks:
             logger.error("Could not fetch %d tasks: %s", len(dead_tasks), dead_tasks)
-
     finally:
         conn.close()
 
 
 if __name__ == "__main__":
-    main()
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser()
+    parser.add_argument("--start-date", type=date.fromisoformat, default="1982-12-10")
+    parser.add_argument("--num-workers", type=int, default=15)
+    parser.add_argument(
+        "--loglevel",
+        choices=["debug", "info", "warning", "error", "critical"],
+        default="error",
+        type=str.lower,
+    )
+
+    args = parser.parse_args()
+
+    loglevel = getattr(logging, args.loglevel.upper())
+    logging.basicConfig(level=loglevel, format=LOG_FORMAT)
+
+    main(args.start_date, args.num_workers)
