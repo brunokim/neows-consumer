@@ -1,19 +1,19 @@
-from attrs import define, evolve, field, frozen
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
-from dotenv import load_dotenv
 import logging
 import math
 import os
-import psycopg2
-from pyrate_limiter import Duration, RequestRate, Limiter
 import queue
 from random import random
-import requests
 import time
 import threading
-import tqdm
 from typing import Any
+
+from attrs import define, evolve, field, frozen
+from dotenv import load_dotenv
+import psycopg2
+from pyrate_limiter import Duration, RequestRate, Limiter
+import requests
+import tqdm
 
 #### Initialization
 
