@@ -47,7 +47,7 @@ def traverse(obj, *keys):
         match obj:
             case list() | tuple():
                 key = int(key)
-                if 0 <= key < len(list):
+                if 0 <= key < len(obj):
                     obj = obj[key]
                 return None
             case dict():
@@ -69,53 +69,20 @@ def extract(obj, f, *keys):
 
 
 @frozen
-class CloseApproach:
-    close_approach_time: datetime
-    relative_velocity_mph: float
-    miss_distance_miles: float
-    orbiting_body: str
-
-    @staticmethod
-    def from_api(d: dict[str, Any]) -> "CloseApproach":
-        close_approach_time = extract(
-            d, lambda x: datetime.fromtimestamp(x / 1000), "epoch_date_close_approach"
-        )
-        relative_velocity_mph = extract(d, float, "relative_velocity", "miles_per_hour")
-        miss_distance_miles = extract(d, float, "miss_distance", "miles")
-        orbiting_body = extract(d, str, "orbiting_body")
-        return CloseApproach(
-            close_approach_time=close_approach_time,
-            relative_velocity_mph=relative_velocity_mph,
-            miss_distance_miles=miss_distance_miles,
-            orbiting_body=orbiting_body,
-        )
-
-    def as_db_tuple(
-        self, neo_id: str, ingest_time: datetime
-    ) -> tuple[datetime, str, datetime, float, float, str]:
-        return (
-            ingest_time,
-            neo_id,
-            self.close_approach_time,
-            self.relative_velocity_mph,
-            self.miss_distance_miles,
-            self.orbiting_body,
-        )
-
-
-@frozen
-class NearEarthObject:
+class NeoCloseApproach:
     neo_reference_id: str
     name: str
     absolute_magnitude_h: float
     estimated_diameter_min_ft: float
     estimated_diameter_max_ft: float
     is_potentially_hazardous_asteroid: bool
-    close_approach_data: tuple[CloseApproach, ...]
     is_sentry_object: bool
+    close_approach_time: datetime
+    close_approach_velocity_mph: float
+    close_approach_distance_miles: float
 
     @staticmethod
-    def from_api(d: dict[str, Any]) -> "NearEarthObject":
+    def from_api(d: dict[str, Any]) -> "NeoCloseApproach":
         neo_reference_id = extract(d, str, "neo_reference_id")
         name = extract(d, str, "name")
         absolute_magnitude_h = extract(d, float, "absolute_magnitude_h")
@@ -128,21 +95,32 @@ class NearEarthObject:
         is_potentially_hazardous_asteroid = extract(
             d, bool, "is_potentially_hazardous_asteroid"
         )
-        close_approach_data = tuple(
-            CloseApproach.from_api(x)
-            for x in (extract(d, list, "close_approach_data") or [])
-        )
         is_sentry_object = extract(d, bool, "is_sentry_object")
+        close_approach_time = extract(
+            d,
+            lambda x: datetime.fromtimestamp(x / 1000),
+            "close_approach_data",
+            0,
+            "epoch_date_close_approach",
+        )
+        close_approach_velocity_mph = extract(
+            d, float, "close_approach_data", 0, "relative_velocity", "miles_per_hour"
+        )
+        close_approach_distance_miles = extract(
+            d, float, "close_approach_data", 0, "miss_distance", "miles"
+        )
 
-        return NearEarthObject(
+        return NeoCloseApproach(
             neo_reference_id=neo_reference_id,
             name=name,
             absolute_magnitude_h=absolute_magnitude_h,
             estimated_diameter_min_ft=estimated_diameter_min_ft,
             estimated_diameter_max_ft=estimated_diameter_max_ft,
             is_potentially_hazardous_asteroid=is_potentially_hazardous_asteroid,
-            close_approach_data=close_approach_data,
             is_sentry_object=is_sentry_object,
+            close_approach_time=close_approach_time,
+            close_approach_velocity_mph=close_approach_velocity_mph,
+            close_approach_distance_miles=close_approach_distance_miles,
         )
 
     def anonymize_reference_id(self) -> str:
@@ -155,9 +133,7 @@ class NearEarthObject:
         last = refid[:4]
         return mask + last
 
-    def as_db_tuple(
-        self, ingest_time: datetime
-    ) -> tuple[datetime, str, str, float, float, float, bool, bool]:
+    def as_db_tuple(self, ingest_time: datetime) -> tuple:
         return (
             ingest_time,
             self.anonymize_reference_id(),
@@ -167,6 +143,9 @@ class NearEarthObject:
             self.estimated_diameter_max_ft,
             self.is_potentially_hazardous_asteroid,
             self.is_sentry_object,
+            self.close_approach_time,
+            self.close_approach_velocity_mph,
+            self.close_approach_distance_miles,
         )
 
 
@@ -177,7 +156,7 @@ class TooManyRequestsException(Exception):
     pass
 
 
-def download_neos(start_date: date, end_date: date) -> list[NearEarthObject]:
+def download_neos(start_date: date, end_date: date) -> list[NeoCloseApproach]:
     """Download near Earth objects from NASA API.
 
     Returns all objects with closest approach to Earth in the [start_date, end_date) interval.
@@ -208,7 +187,7 @@ def download_neos(start_date: date, end_date: date) -> list[NearEarthObject]:
     content = resp.json()
 
     return [
-        NearEarthObject.from_api(neo)
+        NeoCloseApproach.from_api(neo)
         for date_str, date_neos in content["near_earth_objects"].items()
         for neo in date_neos
     ]
@@ -223,7 +202,7 @@ def init_db(conn):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS neo (
+                CREATE TABLE IF NOT EXISTS neo_close_approach (
                     id SERIAL PRIMARY KEY,
                     ingest_time TIMESTAMP WITH TIME ZONE,
                     neo_reference_id VARCHAR,
@@ -232,33 +211,22 @@ def init_db(conn):
                     estimated_diameter_min_ft DOUBLE PRECISION,
                     estimated_diameter_max_ft DOUBLE PRECISION,
                     is_potentially_hazardous_asteroid BOOL,
-                    is_sentry_object BOOL
-                );"""
-            )
-
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS close_approach (
-                    id SERIAL PRIMARY KEY,
-                    ingest_time TIMESTAMP WITH TIME ZONE,
-                    neo_id INTEGER REFERENCES neo(id),
+                    is_sentry_object BOOL,
                     close_approach_time TIMESTAMP,
-                    relative_velocity_mph DOUBLE PRECISION,
-                    miss_distance_miles DOUBLE PRECISION,
-                    orbiting_body TEXT
+                    close_approach_velocity_mph DOUBLE PRECISION,
+                    close_approach_distance_miles DOUBLE PRECISION
                 );"""
             )
 
 
-def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
+def persist_neos(conn, ingest_time: datetime, neos: list[NeoCloseApproach]):
     """Persist NEOs into the database."""
-    num_approaches = 0
     with conn:
         with conn.cursor() as cur:
             for neo in neos:
                 cur.execute(
                     """
-                    INSERT INTO neo(
+                    INSERT INTO neo_close_approach(
                         ingest_time,
                         neo_reference_id,
                         name,
@@ -266,31 +234,16 @@ def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
                         estimated_diameter_min_ft,
                         estimated_diameter_max_ft,
                         is_potentially_hazardous_asteroid,
-                        is_sentry_object
-                    ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id""",
+                        is_sentry_object,
+                        close_approach_time,
+                        close_approach_velocity_mph,
+                        close_approach_distance_miles
+                    ) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
                     neo.as_db_tuple(ingest_time),
                 )
-                neo_id = cur.fetchone()[0]
-                cur.executemany(
-                    """
-                    INSERT INTO close_approach(
-                        ingest_time,
-                        neo_id,
-                        close_approach_time,
-                        relative_velocity_mph,
-                        miss_distance_miles,
-                        orbiting_body
-                    ) VALUES(%s, %s, %s, %s, %s, %s)""",
-                    [
-                        approach.as_db_tuple(neo_id, ingest_time)
-                        for approach in neo.close_approach_data
-                    ],
-                )
-                num_approaches += cur.rowcount
-    logger.info(
-        "Wrote %d NEO rows and %d close approach rows", len(neos), num_approaches
-    )
+
+    logger.info("Wrote %d NEO close approach rows", len(neos))
 
 
 #### Ingestion control
