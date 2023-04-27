@@ -306,8 +306,8 @@ class Ingestion:
     window_size: timedelta = field(default=timedelta(days=8))
     num_workers: int = field(default=15)
     max_retries: int = field(default=3)
+    ingest_time: datetime = field(factory=datetime.now)
 
-    ingest_time: datetime = field(init=False, factory=datetime.now)
     task_queue: queue.SimpleQueue = field(init=False, factory=queue.SimpleQueue)
     dead_letter_queue: queue.SimpleQueue = field(init=False, factory=queue.SimpleQueue)
 
@@ -431,8 +431,10 @@ LOG_FORMAT = "[%(asctime)s] %(levelname)s [%(threadName)s] [%(filename)s:%(funcN
 
 
 def main(start_date: date, num_workers: int):
+    now = datetime.now()
+
     logger.setLevel(logging.DEBUG)
-    log_handler = logging.FileHandler("app.log")
+    log_handler = logging.FileHandler(f"app_{now:%Y%m%d_%H%M%S}.log")
     log_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logger.addHandler(log_handler)
 
@@ -452,7 +454,9 @@ def main(start_date: date, num_workers: int):
     finally:
         conn.close()
 
-    ingestion = Ingestion(start_date=start_date, num_workers=num_workers)
+    ingestion = Ingestion(
+        start_date=start_date, num_workers=num_workers, ingest_time=now
+    )
     dead_tasks = ingestion.run()
     if dead_tasks:
         logger.error("Could not fetch %d tasks: %s", len(dead_tasks), dead_tasks)

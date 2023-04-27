@@ -6,4 +6,4 @@
 .env
 
 # Debugging
-app.log
+app*.log
