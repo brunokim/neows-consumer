@@ -28,7 +28,7 @@ For comparison, the average distance between the Earth and the Moon is 226 thous
 
 ## Installation & development
 
-Pre-requisites: [poetry](https://python-poetry.org/), `libpq-fe.h` (found in `libpq-dev` package in Ubuntu)
+Pre-requisites: [poetry](https://python-poetry.org/), `libpg-fe.h` (found in `libpg-dev` package in Ubuntu)
 
 After cloning the repo, run:
 
