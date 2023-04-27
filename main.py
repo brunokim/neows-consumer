@@ -345,7 +345,11 @@ class Ingestion:  # pylint: disable=too-many-instance-attributes
             try:
                 self.ingest_page(conn, task.start, task.end)
                 break
-            except TooManyRequestsException | requests.Timeout | requests.ConnectionError:  # type: ignore  # noqa: E501
+            except (
+                TooManyRequestsException,
+                requests.Timeout,
+                requests.ConnectionError,
+            ):
                 delay *= factor
             except Exception:
                 # If there's an unexpected exception we fail-open, discarding the task
@@ -387,7 +391,7 @@ class Ingestion:  # pylint: disable=too-many-instance-attributes
             # No more items to process.
             logger.debug("empty queue")
             return False
-        except TooManyRequestsException | requests.Timeout | requests.ConnectionError:  # type: ignore # noqa: E501
+        except (TooManyRequestsException, requests.Timeout, requests.ConnectionError):
             # Stop all other threads from starting requests, and tests for renewed quota
             # with a single thread.
             if self.turnstile.stop():
