@@ -298,7 +298,7 @@ def persist_neos(conn, ingest_time: datetime, neos: list[NearEarthObject]):
 
 @define
 class Turnstile:
-    """Only one thread can pass at a time. The turnstile may be stopped for a period of time."""
+    """Only one thread can pass at a time."""
 
     sem: threading.Semaphore = field(init=False)
 
@@ -377,44 +377,57 @@ class Ingestion:
         logger.info("Starting worker")
         conn = psycopg2.connect(**db_params)
         try:
-            while True:
-                try:
-                    self.turnstile.wait()
-
-                    # 10us timeout allows for a thread switch.
-                    task = self.task_queue.get(timeout=1e-5)
-
-                    self.ingest_page(conn, task.start, task.end)
-                    with lock:
-                        pbar.update(1)
-                except queue.Empty:
-                    # No more items to process.
-                    logger.debug("empty queue")
-                    break
-                except TooManyRequestsException:
-                    # Stop all other threads from starting requests, and tests for renewed quota
-                    # with a single thread.
-                    if self.turnstile.stop():
-                        self.retry_loop(conn, task)
-                        self.turnstile.restart()
-                        with lock:
-                            pbar.update(1)
-                except Exception:
-                    # Stop all threads from starting requests for 60 seconds.
-                    logger.exception("Unexpected exception handling task %s", task)
-                    # Some other exception was raised, increment retry count.
-                    if task.retry_count + 1 >= self.max_retries:
-                        self.dead_letter_queue.put(task)
-                    else:
-                        self.task_queue.put(task.try_again())
-                        logger.warning("Redoing task %s", task)
-                finally:
-                    with lock:
-                        # Update progress bar even if nothing was written.
-                        pbar.update(0)
-                logger.info("Approx queue size: %d", self.task_queue.qsize())
+            while self.do_work(conn, pbar, lock):
+                pass
         finally:
             conn.close()
+
+    def do_work(self, conn, pbar, lock) -> bool:
+        """Get a task from the queue and execute it.
+
+        If there are no more tasks, returns False. Otherwise, returns True.
+        """
+        logger.info("Approx queue size: %d", self.task_queue.qsize())
+        try:
+            self.turnstile.wait()
+
+            # 10us timeout allows for a thread switch.
+            task = self.task_queue.get(timeout=1e-5)
+
+            self.ingest_page(conn, task.start, task.end)
+            with lock:
+                pbar.update(1)
+            return True
+        except queue.Empty:
+            # No more items to process.
+            logger.debug("empty queue")
+            return False
+        except TooManyRequestsException:
+            # Stop all other threads from starting requests, and tests for renewed quota
+            # with a single thread.
+            if self.turnstile.stop():
+                self.retry_loop(conn, task)
+                self.turnstile.restart()
+                with lock:
+                    pbar.update(1)
+            else:
+                # Throttling doesn't count as a retry for the task.
+                self.task_queue.put(task)
+            return True
+        except Exception:
+            # Stop all threads from starting requests for 60 seconds.
+            logger.exception("Unexpected exception handling task %s", task)
+            # Some other exception was raised, increment retry count.
+            if task.retry_count + 1 >= self.max_retries:
+                self.dead_letter_queue.put(task)
+            else:
+                self.task_queue.put(task.try_again())
+                logger.warning("Redoing task %s", task)
+            return True
+        finally:
+            with lock:
+                # Update progress bar even if nothing was written.
+                pbar.update(0)
 
     def run(self):
         num_windows = int((self.end_date - self.start_date) / self.window_size)
