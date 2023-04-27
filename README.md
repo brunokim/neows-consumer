@@ -122,3 +122,6 @@ The application is containerized with Docker to create a Postgres database indep
 - Likewise, we could reuse TCP connections instead of setting one anew for each request.
 - Currently I log verbosely only to the file `app.log`, but I'd like to surface errors to stdout as well. This would require
   configuring the root logger properly -- my first attempt, the root logger would also log verbose log messages :shrug:
+- After quota is exhausted, all threads are parked in the turnstile waiting for it to be restored. Once it happens, the turnstile
+  is unlocked and all threads try to go through at once. This leads to peaks in requests and CPU usage, both in the client and
+  the server, and should be smoothed out.
