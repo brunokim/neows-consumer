@@ -3,10 +3,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 import logging
+import math
 import os
 import psycopg2
 from pyrate_limiter import Duration, RequestRate, Limiter
 import queue
+from random import random
 import requests
 import time
 import threading
@@ -309,11 +311,13 @@ class Turnstile:
         self.sem.acquire()
         self.sem.release()
 
-    def stop(self, wait_secs: float = 60.0):
-        """Stop all other threads for wait_secs."""
+    def stop(self) -> bool:
+        """Stop all other threads."""
         if self.sem.acquire(blocking=False):
-            logger.debug("stopping turnstile for %fs...", wait_secs)
-            threading.Timer(wait_secs, self.restart)
+            logger.debug("stopping turnstile...")
+            return True
+        # Turnstile is already stopped.
+        return False
 
     def restart(self):
         """Restart the turnstile."""
@@ -331,9 +335,9 @@ class Task:
         return evolve(self, retry_count=self.retry_count + 1)
 
 
-# Slightly higher than the observed rate limit of 2000/hr.
+# Slightly higher than the posted rate limit of 1000/hr.
 # Any overflow will be caught by waiting on the turnstile.
-limiter = Limiter(RequestRate(2500, Duration.HOUR))
+limiter = Limiter(RequestRate(1500, Duration.HOUR))
 
 
 @define
@@ -355,7 +359,22 @@ class Ingestion:
         neos = download_neos(start, end)
         persist_neos(conn, self.ingest_time, neos)
 
+    def retry_loop(self, conn, task: Task):
+        """Retries task with exponential backoff until it succeeds."""
+        delay = 16.0
+        factor = math.sqrt(2)  # Doubles delay every 2 attempts.
+        while True:
+            logger.info("Sleeping for %.3fs", delay)
+            time.sleep(delay)
+            try:
+                self.ingest_page(conn, task.start, task.end)
+                break
+            except TooManyRequestsException:
+                delay *= factor
+
     def worker(self, pbar, lock):
+        time.sleep(random() * 5)  # Stagger thread start
+        logger.info("Starting worker")
         conn = psycopg2.connect(**db_params)
         try:
             while True:
@@ -373,11 +392,13 @@ class Ingestion:
                     logger.debug("empty queue")
                     break
                 except TooManyRequestsException:
-                    # Stop all threads from starting requests for 60 seconds.
-                    self.turnstile.stop(60.0)
-                    # Throttling doesn't count as a retry.
-                    self.task_queue.put(task)
-                    logger.warning("Redoing task %s", task)
+                    # Stop all other threads from starting requests, and tests for renewed quota
+                    # with a single thread.
+                    if self.turnstile.stop():
+                        self.retry_loop(conn, task)
+                        self.turnstile.restart()
+                        with lock:
+                            pbar.update(1)
                 except Exception:
                     # Stop all threads from starting requests for 60 seconds.
                     logger.exception("Unexpected exception handling task %s", task)
@@ -473,7 +494,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    loglevel = getattr(logging, args.loglevel.upper())
-    logging.basicConfig(level=loglevel, format=LOG_FORMAT)
+    # TODO: I'd like to log everything at 'loglevel', and the module's logs to 'app.log'.
+    # The lines below log everything to stderr, in addition to 'app.log'.
+    #
+    # loglevel = getattr(logging, args.loglevel.upper())
+    # logging.basicConfig(level=loglevel, format=LOG_FORMAT)
 
     main(args.start_date, args.num_workers)
