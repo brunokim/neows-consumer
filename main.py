@@ -309,7 +309,7 @@ class Task:  # pylint: disable=too-few-public-methods
 
 # Slightly higher than the posted rate limit of 1000/hr.
 # Any overflow will be caught by waiting on the turnstile.
-limiter = Limiter(RequestRate(1200, Duration.HOUR))
+limiter = Limiter(RequestRate(1100, Duration.HOUR))
 
 
 @define
@@ -345,7 +345,7 @@ class Ingestion:  # pylint: disable=too-many-instance-attributes
             try:
                 self.ingest_page(conn, task.start, task.end)
                 break
-            except TooManyRequestsException:
+            except TooManyRequestsException | requests.Timeout | requests.ConnectionError:  # type: ignore  # noqa: E501
                 delay *= factor
             except Exception:
                 # If there's an unexpected exception we fail-open, discarding the task
@@ -387,7 +387,7 @@ class Ingestion:  # pylint: disable=too-many-instance-attributes
             # No more items to process.
             logger.debug("empty queue")
             return False
-        except TooManyRequestsException:
+        except TooManyRequestsException | requests.Timeout | requests.ConnectionError:  # type: ignore # noqa: E501
             # Stop all other threads from starting requests, and tests for renewed quota
             # with a single thread.
             if self.turnstile.stop():
