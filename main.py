@@ -337,7 +337,7 @@ class Ingestion:  # pylint: disable=too-many-instance-attributes
     # pylint: disable=broad-exception-caught
     def retry_loop(self, conn, task: Task):
         """Retries task with exponential backoff until it succeeds."""
-        delay = 16.0
+        delay = 4.0
         factor = math.sqrt(2)  # Doubles delay every 2 attempts.
         while True:
             logger.info("Sleeping for %s", timedelta(seconds=delay))
