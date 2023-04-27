@@ -10,6 +10,7 @@ from typing import Any
 
 from attrs import define, evolve, field, frozen
 from dotenv import load_dotenv
+import pdb_attach
 import psycopg2
 from pyrate_limiter import Duration, RequestRate, Limiter
 import requests
@@ -32,6 +33,9 @@ DB_NAME = os.getenv("DB_NAME") or DB_USER
 db_params = dict(
     dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
 )
+
+pdb_attach.listen(50000)
+
 #### Data model
 
 
