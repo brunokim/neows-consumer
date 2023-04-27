@@ -1,4 +1,4 @@
-# Near Earth Object's consumer
+# Near Earth Object's API consumer
 
 This project demonstrates how to consume objects from a rate-limited API. It exposes:
 
@@ -95,8 +95,8 @@ that stores all pending tasks.
 
 1. Before starting thread workers, the queue is populated with 8-day windows of start-end dates to be queried, covering the entire desired range.
 2. Each thread take one task at a time. In case of failure, the task is inserted back in the queue.
-  - Each task has a retry count, that is incremented before reinsertion in case of an unexpected exception.
-  - Throttling failures don't count for retries.
+   * Each task has a retry count, that is incremented before reinsertion in case of an unexpected exception.
+   * Throttling failures don't count for retries.
 
 ## Container
 
@@ -104,5 +104,16 @@ The application is containerized with Docker to create a Postgres database indep
 
 ## CLI
 
-- `--num-workers`: number of concurrent workers to download.
-- `--start-date`: Start date in the past to start ingestion.
+- `--start-date`: Start date in the past to start ingestion (end date is always today).
+- `--num-workers`: number of concurrent workers to download. 15 is conservative, and 100 starts breaking other stuff.
+
+## Bugs & Feature requests
+
+- This API provides detailed information of available resources. We should use this response to gradually adjust the rate limiter,
+  but `pyrate-limiter` doesn't support dynamic rates.
+  - This information could even be displayed with `tqdm` by using a second progress bar!
+- We're using one database connection per thread, which shouldn't be necessary. There may be a bug in `psycopg2`, since the error
+  message appears only in a [very recent post in StackOverflow](https://stackoverflow.com/q/73803605/946814).
+- Likewise, we could reuse TCP connections instead of setting one anew for each request.
+- Currently I log verbosely only to the file `app.log`, but I'd like to surface errors to stdout as well. This would require
+  configuring the root logger properly -- my first attempt, the root logger would also log verbose log messages :shrug:
