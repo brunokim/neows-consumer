@@ -122,6 +122,7 @@ The application is containerized with Docker to create a Postgres database indep
 - We're using one database connection per thread, which shouldn't be necessary. There may be a bug in `psycopg2`, since the error
   message appears only in a [very recent post in StackOverflow](https://stackoverflow.com/q/73803605/946814).
 - Likewise, we could reuse TCP connections instead of setting one anew for each request.
+  - ...or perhaps `requests` does this automatically for us? 🤔
 - Currently I log verbosely only to the file `app.log`, but I'd like to surface errors to stdout as well. This would require
   configuring the root logger properly -- my first attempt, the root logger would also log verbose log messages :shrug:
 - After quota is exhausted, all threads are parked in the turnstile waiting for it to be restored. Once it happens, the turnstile
