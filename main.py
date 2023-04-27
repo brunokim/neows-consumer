@@ -340,7 +340,7 @@ class Ingestion:  # pylint: disable=too-many-instance-attributes
         delay = 16.0
         factor = math.sqrt(2)  # Doubles delay every 2 attempts.
         while True:
-            logger.info("Sleeping for %.3fs", delay)
+            logger.info("Sleeping for %s", timedelta(seconds=delay))
             time.sleep(delay)
             try:
                 self.ingest_page(conn, task.start, task.end)
