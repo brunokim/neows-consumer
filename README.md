@@ -26,6 +26,44 @@ to Earth on Jan 6th and missed the planet by 28 million miles (a very safe dista
 The one to get closest was (2022 AV13), with only 6ft of diameter, that on Jan 5th passed mere 68 thousand miles from us.
 For comparison, the average distance between the Earth and the Moon is 226 thousand miles.
 
+## Installation & development
+
+Pre-requisites: [poetry](https://python-poetry.org/), `libpq-fe.h` (found in `libpq-dev` package in Ubuntu)
+
+After cloning the repo, run:
+
+```sh
+$ poetry install
+$ poetry shell
+(neows-consumer) $ pre-commit install --install-hooks -t pre-commit
+(neows-consumer) $ pre-commit install --install-hooks -t pre-push
+```
+
+You may run fast checks with `pre-commit`:
+
+```sh
+(neows-consumer) $ pre-commit run --all-files
+```
+
+There are slower checks that run only before push. To run them, you need to add `--hook-stage`:
+
+```sh
+(neows-consumer) $ pre-commit run --all-files --hook-stage pre-push
+```
+
+To deploy the code with Docker, run
+
+```sh
+(neows-consumer) $ docker compose build
+(neows-consumer) $ docker compose up -d
+```
+
+If you wish to run only the app against the Dockerized database, you can do so with:
+
+```sh
+(neows-consumer) $ DB_HOST=0.0.0.0 DB_PASSWORD=password DB_USER=postgres DB_PORT=54321 python main.py
+```
+
 ## Data schema
 
 The data we're interested in can be represented in the following pseudo-grammar:
@@ -104,6 +142,14 @@ that stores all pending tasks.
    the end of the ingestion
    * I expect that all queries have similar costs (although some weeks have more NEOs flying by, perhaps?), so if a task
      fail 3 times, it's likely that plenty of others are failing often as well.
+
+## Testing
+
+There are no unit tests in this project, because most of the implementation concerns either hard-to-test constructs
+(network requests, concurrent execution) or are too simple to warrant them (data conversion).
+
+To ensure at least some safety net, the repository is configured to run static pre-commit checks with `flake8` and `mypy`,
+and pre-push checks with `pylint`. To install the hooks, view the [installation](#installation--development) section.
 
 ## Container
 
