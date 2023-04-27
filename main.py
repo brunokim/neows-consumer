@@ -53,7 +53,8 @@ def traverse(obj, *keys):
                 key = int(key)
                 if 0 <= key < len(obj):
                     obj = obj[key]
-                return None
+                else:
+                    return None
             case dict():
                 obj = obj.get(key)
             case _:
