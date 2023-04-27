@@ -1,3 +1,5 @@
+"""NASA NEO API consumer sample."""
+
 from datetime import date, datetime, timedelta
 import logging
 import math
@@ -16,7 +18,7 @@ from pyrate_limiter import Duration, RequestRate, Limiter
 import requests
 import tqdm
 
-#### Initialization
+# Initialization
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +32,17 @@ DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME") or DB_USER
 
-db_params = dict(
-    dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
-)
+db_params = {
+    "dbname": DB_NAME,
+    "user": DB_USER,
+    "password": DB_PASSWORD,
+    "host": DB_HOST,
+    "port": DB_PORT,
+}
 
 pdb_attach.listen(50000)
 
-#### Data model
+# Data model
 
 
 def traverse(obj, *keys):
@@ -75,6 +81,8 @@ def extract(obj, f, *keys):
 
 @frozen
 class NeoCloseApproach:
+    """Model for a NEO's close approach to Earth."""
+
     neo_reference_id: str
     name: str
     absolute_magnitude_h: float
@@ -88,6 +96,7 @@ class NeoCloseApproach:
 
     @staticmethod
     def from_api(d: dict[str, Any]) -> "NeoCloseApproach":
+        """Builds an object from its API result."""
         neo_reference_id = extract(d, str, "neo_reference_id")
         name = extract(d, str, "name")
         absolute_magnitude_h = extract(d, float, "absolute_magnitude_h")
@@ -139,6 +148,7 @@ class NeoCloseApproach:
         return mask + last
 
     def as_db_tuple(self, ingest_time: datetime) -> tuple:
+        """Export the model as a tuple for DB insertion."""
         return (
             ingest_time,
             self.anonymize_reference_id(),
@@ -154,22 +164,22 @@ class NeoCloseApproach:
         )
 
 
-#### Download from source.
+# Download from source.
 
 
 class TooManyRequestsException(Exception):
-    pass
+    """Exception for an HTTP 429 Too Many Requests status code."""
 
 
 def download_neos(start_date: date, end_date: date) -> list[NeoCloseApproach]:
     """Download near Earth objects from NASA API.
 
-    Returns all objects with closest approach to Earth in the [start_date, end_date) interval.
-    The API returns dates at most 8 days apart.
+    Returns all objects with closest approach to Earth in the [start_date, end_date)
+    interval. The API returns dates at most 8 days apart.
     """
 
-    # The API actually includes end_date in the response, so we subtract 1 day to keep it a
-    # closed-open interval.
+    # The API actually includes end_date in the response, so we subtract 1 day to keep
+    # it a closed-open interval.
     logger.debug("starting download: [%s, %s)", start_date, end_date)
     resp = requests.get(
         "https://api.nasa.gov/neo/rest/v1/feed",
@@ -199,7 +209,7 @@ def download_neos(start_date: date, end_date: date) -> list[NeoCloseApproach]:
     ]
 
 
-#### Database persistence
+# Database persistence
 
 
 def init_db(conn):
@@ -252,7 +262,7 @@ def persist_neos(conn, ingest_time: datetime, neos: list[NeoCloseApproach]):
     logger.info("Wrote %d NEO close approach rows", len(neos))
 
 
-#### Ingestion control
+# Ingestion control
 
 
 @define
@@ -285,12 +295,15 @@ class Turnstile:
 
 
 @frozen
-class Task:
+class Task:  # pylint: disable=too-few-public-methods
+    """Model for a single task."""
+
     start: date
     end: date
     retry_count: int = field(default=0)
 
     def try_again(self) -> "Task":
+        """Returns a new stack from this one, incrementing retry count."""
         return evolve(self, retry_count=self.retry_count + 1)
 
 
@@ -300,7 +313,9 @@ limiter = Limiter(RequestRate(1200, Duration.HOUR))
 
 
 @define
-class Ingestion:
+class Ingestion:  # pylint: disable=too-many-instance-attributes
+    """Data ingestion executor."""
+
     start_date: date = field()
     end_date: date = field(factory=date.today)
     window_size: timedelta = field(default=timedelta(days=8))
@@ -315,9 +330,11 @@ class Ingestion:
 
     @limiter.ratelimit("nasa-neows", delay=True)
     def ingest_page(self, conn, start: date, end: date):
+        """Ingests a page of NEOs and persist them to database."""
         neos = download_neos(start, end)
         persist_neos(conn, self.ingest_time, neos)
 
+    # pylint: disable=broad-exception-caught
     def retry_loop(self, conn, task: Task):
         """Retries task with exponential backoff until it succeeds."""
         delay = 16.0
@@ -340,6 +357,7 @@ class Ingestion:
                 break
 
     def worker(self, pbar, lock):
+        """Initialize a thread worker and start loop."""
         time.sleep(random() * 5)  # Stagger thread start
         logger.info("Starting worker")
         conn = psycopg2.connect(**db_params)
@@ -396,6 +414,7 @@ class Ingestion:
                 pbar.update(0)
 
     def run(self):
+        """Starts ingestion."""
         num_windows = int((self.end_date - self.start_date) / self.window_size)
         for i in range(num_windows):
             start = self.start_date + i * self.window_size
@@ -418,19 +437,28 @@ class Ingestion:
             thread.join()
 
         # Dumping a queue: https://stackoverflow.com/a/69095442/946814
+        def get_with_timeout():
+            self.dead_letter_queue.get(timeout=1e-5)
+
         self.dead_letter_queue.put(None)
-        get_with_timeout = lambda: self.dead_letter_queue.get(timeout=1e-5)
         dead_letters = list(iter(get_with_timeout, None))
 
         return dead_letters
 
 
-#### App entry point
+# App entry point
 
-LOG_FORMAT = "[%(asctime)s] %(levelname)s [%(threadName)s] [%(filename)s:%(funcName)s:%(lineno)d] %(message)s"
+LOG_FORMAT = (
+    "[%(asctime)s] "
+    "%(levelname)s "
+    "[%(threadName)s] "
+    "[%(filename)s:%(funcName)s:%(lineno)d] "
+    "%(message)s"
+)
 
 
 def main(start_date: date, num_workers: int):
+    """App entry point."""
     now = datetime.now()
 
     logger.setLevel(logging.DEBUG)
@@ -477,8 +505,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # TODO: I'd like to log everything at 'loglevel', and the module's logs to 'app.log'.
-    # The lines below log everything to stderr, in addition to 'app.log'.
+    # TODO: I'd like to log everything at 'loglevel', and the module's logs to
+    # 'app.log'. The lines below log everything to stderr, in addition to 'app.log'.
     #
     # loglevel = getattr(logging, args.loglevel.upper())
     # logging.basicConfig(level=loglevel, format=LOG_FORMAT)
