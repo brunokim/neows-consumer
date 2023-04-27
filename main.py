@@ -183,7 +183,7 @@ def download_neos(start_date: date, end_date: date) -> list[NeoCloseApproach]:
     logger.debug("starting download: [%s, %s)", start_date, end_date)
     resp = requests.get(
         "https://api.nasa.gov/neo/rest/v1/feed",
-        params={
+        params={  # type: ignore
             "start_date": start_date.isoformat(),
             "end_date": (end_date - timedelta(days=1)).isoformat(),
             "api_key": API_KEY,
@@ -476,7 +476,7 @@ def main(start_date: date, num_workers: int):
     #
     # Relevant SO thread: https://stackoverflow.com/q/73803605/946814
     # TODO: open a bug in psycopg2?
-    conn = psycopg2.connect(**db_params)
+    conn = psycopg2.connect(**db_params)  # type: ignore
     try:
         init_db(conn)
     finally:

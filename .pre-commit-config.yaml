@@ -39,5 +39,9 @@ repos:
         entry: pylint
         language: system
         types: [python]
-        args: ["--max-line-length", "88"]
         stages: [pre-push]
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]
