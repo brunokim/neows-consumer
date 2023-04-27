@@ -5,6 +5,7 @@ This project demonstrates how to consume objects from a rate-limited API. It exp
 - Thread synchronization;
 - Client rate limiting;
 - Response to throttling with exponential backoff;
+- Handling task retry;
 
 ## NASA NEO-WS API
 
@@ -97,6 +98,10 @@ that stores all pending tasks.
 2. Each thread take one task at a time. In case of failure, the task is inserted back in the queue.
    * Each task has a retry count, that is incremented before reinsertion in case of an unexpected exception.
    * Throttling failures don't count for retries.
+3. If a task is retried too many times (currently, 3), it is discarded to a dead-letter queue. This queue is dumped at
+   the end of the ingestion
+   * I expect that all queries have similar costs (although some weeks have more NEOs flying by, perhaps?), so if a task
+     fail 3 times, it's likely that plenty of others are failing often as well.
 
 ## Container
 
