@@ -82,6 +82,8 @@ Given these, we converted the data to the following output table:
 
 ## Ingest design
 
+![Sample execution](docs/sample.png)
+
 The API documents a limit of 1000 requests/hour upon registering for an API key. For each request, it
 provides the max limit and the current number of requests remaining via custom headers. In practice, the
 advertised limit was always of 2000 requests/hour, but some intermediate infrastructure failed to
