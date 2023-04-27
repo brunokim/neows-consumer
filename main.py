@@ -441,8 +441,8 @@ class Ingestion:  # pylint: disable=too-many-instance-attributes
             thread.join()
 
         # Dumping a queue: https://stackoverflow.com/a/69095442/946814
-        def get_with_timeout():
-            self.dead_letter_queue.get(timeout=1e-5)
+        def get_with_timeout() -> Task:
+            return self.dead_letter_queue.get(timeout=1e-5)
 
         self.dead_letter_queue.put(None)
         dead_letters = list(iter(get_with_timeout, None))
