@@ -178,6 +178,7 @@ def download_neos(start_date: date, end_date: date) -> list[NeoCloseApproach]:
             "api_key": API_KEY,
             "detailed": False,
         },
+        timeout=10.0,
     )
 
     remaining = resp.headers["X-RateLimit-Remaining"]
@@ -294,7 +295,7 @@ class Task:
 
 # Slightly higher than the posted rate limit of 1000/hr.
 # Any overflow will be caught by waiting on the turnstile.
-limiter = Limiter(RequestRate(1500, Duration.HOUR))
+limiter = Limiter(RequestRate(1200, Duration.HOUR))
 
 
 @define
@@ -328,6 +329,14 @@ class Ingestion:
                 break
             except TooManyRequestsException:
                 delay *= factor
+            except Exception:
+                # If there's an unexpected exception we fail-open, discarding the task
+                # and releasing the turnstile.
+                logger.exception(
+                    "Unexpected exception during retry loop, discarding task %s", task
+                )
+                self.dead_letter_queue.put(task)
+                break
 
     def worker(self, pbar, lock):
         time.sleep(random() * 5)  # Stagger thread start
