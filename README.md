@@ -31,7 +31,7 @@ The data we're interested in can be represented in the following pseudo-grammar:
 
 ```none
 response ::= {
-  "near_earth_objects": {(date: [neo*])*
+  "near_earth_objects": {(date: [neo*])*}
 } ;
 neo ::= {
   "neo_reference_id": string,
