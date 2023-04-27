@@ -19,7 +19,11 @@ closest approach lies between two given dates, at most 7 days apart. For example
 
 [https://api.nasa.gov/neo/rest/v1/feed?**start\_date**=2023-01-01&**end_date**=2023-01-08&**api_key**=DEMO_KEY](https://api.nasa.gov/neo/rest/v1/feed?start_date=2023-01-01&end_date=2023-01-08&api_key=DEMO_KEY)
 
-Returns 72 objects that have their closest approach between Jan 1st 2023 and Jan 8th 2023 (inclusive).
+Returns 110 objects that have their closest approach between Jan 1st 2023 and Jan 8th 2023 (inclusive).
+The largest of them is "17511 (1992 QN)", with approximately 4,900 ft of diameter, that reached its closest approach
+to Earth on Jan 6th and missed the planet by 28 million miles (a very safe distance).
+The one to get closest was (2022 AV13), with only 6ft of diameter, that on Jan 5th passed mere 68 thousand miles from us.
+For comparison, the average distance between the Earth and the Moon is 226 thousand miles.
 
 ## Response schema
 
