@@ -372,7 +372,6 @@ class Ingestion:
                 self.task_queue.put(task)
             return True
         except Exception:
-            # Stop all threads from starting requests for 60 seconds.
             logger.exception("Unexpected exception handling task %s", task)
             # Some other exception was raised, increment retry count.
             if task.retry_count + 1 >= self.max_retries:
@@ -433,7 +432,7 @@ def main(start_date: date, num_workers: int):
     #
     #     psycopg2.ProgrammingError: the connection cannot be re-entered recursively
     #
-    # I'm using connections only as context managers.
+    # I'm using connections only as context managers, so this shouldn't happen.
     #
     # Relevant SO thread: https://stackoverflow.com/q/73803605/946814
     # TODO: open a bug in psycopg2?
